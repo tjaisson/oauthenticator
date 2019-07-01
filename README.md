@@ -1,3 +1,5 @@
+# OAuthenticator with support for EntCore
+
 # OAuthenticator
 
 OAuth + JupyterHub Authenticator = OAuthenticator
