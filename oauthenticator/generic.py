@@ -9,7 +9,7 @@ import base64
 import urllib
 
 from tornado.auth import OAuth2Mixin
-from tornado import gen, web
+from tornado import web
 
 from tornado.httputil import url_concat
 from tornado.httpclient import HTTPRequest, AsyncHTTPClient
@@ -67,6 +67,11 @@ class GenericOAuthenticator(OAuthenticator):
         config=True,
         help="Userdata method to get user data login information"
     )
+    userdata_token_method = Unicode(
+        os.environ.get('OAUTH2_USERDATA_REQUEST_TYPE', 'header'),
+        config=True,
+        help="Method for sending access token in userdata request. Supported methods: header, url. Default: header" 
+    )
 
     tls_verify = Bool(
         os.environ.get('OAUTH2_TLS_VERIFY', 'True').lower() in {'true', '1'},
@@ -74,8 +79,13 @@ class GenericOAuthenticator(OAuthenticator):
         help="Disable TLS verification on http request"
     )
 
-    @gen.coroutine
-    def authenticate(self, handler, data=None):
+    basic_auth = Bool(
+        os.environ.get('OAUTH2_BASIC_AUTH', 'True').lower() in {'true', '1'},
+        config=True,
+        help="Disable basic authentication for access token request"
+    )
+
+    async def authenticate(self, handler, data=None):
         code = handler.get_argument("code")
         # TODO: Configure the curl_httpclient for tornado
         http_client = AsyncHTTPClient()
@@ -92,18 +102,20 @@ class GenericOAuthenticator(OAuthenticator):
         else:
             raise ValueError("Please set the OAUTH2_TOKEN_URL environment variable")
 
-        b64key = base64.b64encode(
-            bytes(
-                "{}:{}".format(self.client_id, self.client_secret),
-                "utf8"
-            )
-        )
-
         headers = {
             "Accept": "application/json",
-            "User-Agent": "JupyterHub",
-            "Authorization": "Basic {}".format(b64key.decode("utf8"))
+            "User-Agent": "JupyterHub"
         }
+
+        if self.basic_auth:
+            b64key = base64.b64encode(
+                bytes(
+                    "{}:{}".format(self.client_id, self.client_secret),
+                    "utf8"
+                )
+            )
+            headers.update({"Authorization": "Basic {}".format(b64key.decode("utf8"))})
+
         req = HTTPRequest(url,
                           method="POST",
                           headers=headers,
@@ -111,7 +123,7 @@ class GenericOAuthenticator(OAuthenticator):
                           body=urllib.parse.urlencode(params)  # Body is required for a POST...
                           )
 
-        resp = yield http_client.fetch(req)
+        resp = await http_client.fetch(req)
 
         resp_json = json.loads(resp.body.decode('utf8', 'replace'))
 
@@ -120,7 +132,7 @@ class GenericOAuthenticator(OAuthenticator):
         token_type = resp_json['token_type']
         scope = resp_json.get('scope', '')
         if (isinstance(scope, str)):
-                scope = scope.split(' ')        
+            scope = scope.split(' ')
 
         # Determine who the logged in user is
         headers = {
@@ -133,12 +145,15 @@ class GenericOAuthenticator(OAuthenticator):
         else:
             raise ValueError("Please set the OAUTH2_USERDATA_URL environment variable")
 
+        if self.userdata_token_method == "url":
+            url = url_concat(self.userdata_url, dict(access_token=access_token))
+
         req = HTTPRequest(url,
                           method=self.userdata_method,
                           headers=headers,
                           validate_cert=self.tls_verify,
                           )
-        resp = yield http_client.fetch(req)
+        resp = await http_client.fetch(req)
         resp_json = json.loads(resp.body.decode('utf8', 'replace'))
 
         if not resp_json.get(self.username_key):
